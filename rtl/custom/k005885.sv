@@ -4,7 +4,7 @@
 //  generator
 //  Graphics logic based on the video section of the Green Beret core for
 //  MiSTer by MiSTer-X
-//  Copyright (C) 2020, 2021 Ace
+//  Copyright (C) 2020, 2022 Ace
 //
 //  Permission is hereby granted, free of charge, to any person obtaining a
 //  copy of this software and associated documentation files (the "Software"),
@@ -133,12 +133,7 @@ reg [3:0] div = 4'd0;
 always_ff @(posedge CK49) begin
 	div <= div + 4'd1;
 end
-reg [2:0] n_div = 3'd0;
-always_ff @(negedge CK49) begin
-	n_div <= n_div + 3'd1;
-end
 wire cen_6m = !div[2:0];
-wire n_cen_6m = !n_div;
 wire cen_3m = !div;
 assign NCK2 = div[2];
 assign H1O = div[3];
@@ -175,11 +170,9 @@ reg [8:0] v_cnt = 9'd0;
 //rolls over
 reg hblank = 0;
 reg vblank = 0;
-reg vblank_irq_en = 0;
 reg frame_odd_even = 0;
 //Add an extra 10 lines to the vertical counter if a bootleg Iron Horse ROM set is loaded or remove 9 lines from the vertical
 //counter if a bootleg Jackal ROM set is loaded
-//Also add 2 extra lines to the vertical counter if using the extended 280x224 video mode
 reg [8:0] vcnt_end = 0;
 always_ff @(posedge CK49) begin
 	if(cen_6m) begin
@@ -225,10 +218,6 @@ end
 always_ff @(posedge CK49) begin
 	if(cen_6m) begin
 		case(h_cnt)
-			0: begin
-				vblank_irq_en <= 0;
-				h_cnt <= h_cnt + 9'd1;
-			end
 			//HBlank ends two lines earlier than normal on bootleg Jackal PCBs
 			11: begin
 				if(BTLG == 2'b01)
@@ -266,7 +255,6 @@ always_ff @(posedge CK49) begin
 					end
 					239: begin
 						vblank <= 1;
-						vblank_irq_en <= 1;
 						frame_odd_even <= ~frame_odd_even;
 						v_cnt <= v_cnt + 9'd1;
 					end
@@ -293,48 +281,49 @@ assign NCSY = NHSY ^ NVSY;
 
 //------------------------------------------------------------- IRQs -----------------------------------------------------------//
 
+//Edge detection for VBlank and vertical counter bits 4 and 5 for IRQ generation
+reg old_vblank, old_vcnt4, old_vcnt5;
+always_ff @(posedge CK49) begin
+	old_vcnt4 <= v_cnt[4];
+	old_vcnt5 <= v_cnt[5];
+	old_vblank <= vblank;
+end
+
 //IRQ (triggers every VBlank)
 reg vblank_irq = 1;
-always_ff @(posedge CK49 or negedge NEXR) begin
-	if(!NEXR)
+always_ff @(posedge CK49) begin
+	if(!NEXR || !irq_mask)
 		vblank_irq <= 1;
-	else if(cen_6m) begin
-		if(!irq_mask)
-			vblank_irq <= 1;
-		else if(vblank_irq_en)
-			vblank_irq <= 0;
-	end
+	else if(!old_vblank && vblank)
+		vblank_irq <= 0;
 end
 assign NIRQ = vblank_irq;
 
-//NMI (triggers every 64 scanlines starting from scanline 48)
+//NMI (triggers on the falling edge of vertical counter bits 4 or 5 based on the state of tile control register bit 2)
 reg nmi = 1;
-always_ff @(posedge CK49 or negedge NEXR) begin
-	if(!NEXR)
+always_ff @(posedge CK49) begin
+	if(!NEXR || !nmi_mask)
 		nmi <= 1;
-	else if(cen_3m) begin
-		if(!nmi_mask)
-			nmi <= 1;
-		else if(tile_ctrl[2]) begin
-			if(v_cnt % 9'd32 == 31)
+	else begin
+		if(tile_ctrl[2]) begin
+			if(old_vcnt4 && !v_cnt[4])
 				nmi <= 0;
 		end
-		else
-			if(v_cnt % 9'd64 == 63)
+		else begin
+			if(old_vcnt5 && !v_cnt[5])
 				nmi <= 0;
+		end
 	end
 end
 assign NNMI = nmi;
 
 //FIRQ (triggers every second VBlank)
 reg firq = 1;
-always_ff @(posedge CK49 or negedge NEXR) begin
-	if(!NEXR)
+always_ff @(posedge CK49) begin
+	if(!NEXR || !firq_mask)
 		firq <= 1;
-	else if(cen_3m) begin
-		if(!firq_mask)
-			firq <= 1;
-		else if(!frame_odd_even && v_cnt == 9'd240)
+	else begin
+		if(frame_odd_even && !old_vblank && vblank)
 			firq <= 0;
 	end
 end
@@ -596,7 +585,7 @@ wire [8:0] vcnt_x = v_cnt ^ {9{flipscreen}};
 
 //Generate tilemap position by summing the XORed counter bits with their respective scroll registers or ZRAM bank 0 based on
 //whether row scroll or column scroll is enabled (do not allow scrolling when drawing Finalizer - Super Transformation's HUD
-//and offset the tilemap layer down by one line and right by 4 with this game)
+//and offset the tilemap layer with this game)
 wire [8:0] row_scroll = (tile_ctrl[2] & !flipscreen & tile1_en) ? 9'd0:
                         (tile_ctrl[2] & flipscreen & tile1_en) ? 9'd40:
                         (scroll_ctrl[3:1] == 3'b101) ? zram0_D : {scroll_ctrl[0], scroll_x};
@@ -618,7 +607,7 @@ wire tile_vflip = tile_ctrl[2] ? tile_attrib_D[5] : tile0_attrib_D[5];
 assign R = {tile_ctrl[1:0], tile_index, (tilemap_vpos[2:0] ^ {3{tile_vflip}}), (tilemap_hpos[2] ^ tile_hflip)};
 
 //Latch tile data from graphics ROMs, tile colors and tile H flip bit from VRAM on the falling edge of tilemap horizontal position
-//bit 1 (bit 0 for Finalizer)
+//bit 1 (direct for Finalizer)
 reg [15:0] RD_lat = 16'd0;
 reg [3:0] tile_color = 4'd0;
 reg tile_hflip_lat = 0;
@@ -643,19 +632,13 @@ wire [7:0] RD = (tilemap_hpos[1] ^ tile_hflip_lat) ? RD_lat[7:0] : RD_lat[15:8];
 //Further multiplex graphics ROM data down from 8 bits to 4 using bit 0 of the horizontal position
 wire [3:0] tile_pixel = (tilemap_hpos[0] ^ tile_hflip_lat) ? RD[3:0] : RD[7:4];
 
-//Retrieve tilemap select bit from bit 1 of the tile control register XORed with bit 5 of the same register (delay by 3 cycles of
-//the pixel clock when using the extended 280x240 video mode)
-wire tile_sel = tile_ctrl[1] ^ tile_ctrl[5];
+//Prioritize the tilemap layer when using the extended 280x224 mode for Finalizer in the score display area, otherwise give priority
+//to sprites
+wire tile_sel = tile_ctrl[2] & (flipscreen ? h_cnt > 9'd258 : h_cnt < 9'd43);
 reg tilemap_en = 0;
-reg [2:0] tile1_en_dly;
 always_ff @(posedge CK49) begin
-	if(n_cen_6m) begin
-		tile1_en_dly <= {tile1_en_dly[1:0], tile1_en};
-		if(!tile_ctrl[2])
-			tilemap_en <= tile_sel;
-		else
-			tilemap_en <= tile1_en_dly[2];
-	end
+	if(cen_6m)
+		tilemap_en <= tile_sel;
 end
 
 //Address output to tilemap LUT PROM
@@ -697,15 +680,21 @@ end
 //Sprite state machine
 reg [8:0] sprite_index;
 reg [2:0] sprite_offset;
-reg [7:0] sprite_attrib0, sprite_attrib1, sprite_attrib2, sprite_attrib3, sprite_attrib4;
 reg [2:0] sprite_fsm_state;
+reg [11:0] sprite_code;
+reg [8:0] sprite_limit;
+reg [8:0] sprite_x;
+reg [7:0] sprite_y;
 reg [5:0] sprite_width;
-//Bootleg Iron Horse PCBs have a lower-than-normal sprite limit causing noticeable sprite flickering - reduce the sprite limit
-//to 32 sprites (0 - 155 in increments of 5) if one such ROM set is loaded (render 96 sprites at once, 0 - 485 in increments of
-//5, otherwise)
-wire [8:0] sprite_limit = (BTLG == 2'b10) ? 9'd155 : 9'd485;
+reg [3:0] sprite_color;
+reg [2:0] sprite_size;
+reg sprite_hflip, sprite_vflip, sprite_x8_sel, sprite_x8_vram;
 wire [8:0] sprite_fsm_reset = tile_ctrl[2] ? 9'd40 : 9'd0;
 always_ff @(posedge CK49) begin
+	//Bootleg Iron Horse PCBs have a lower-than-normal sprite limit causing noticeable sprite flickering - reduce the sprite limit
+	//to 32 sprites (0 - 155 in increments of 5) if one such ROM set is loaded (render 96 sprites at once, 0 - 485 in increments of
+	//5, otherwise)
+	sprite_limit <= (BTLG == 2'b10) ? 9'd155 : 9'd485;
 	//Reset the sprite state machine whenever the sprite horizontal postion, and in turn the horziontal counter, returns to 0
 	//Also hold the sprite state machine in this initial state for the first line while drawing sprites for bootleg Iron Horse
 	//ROM sets to prevent graphical garbage from occurring on the top-most line
@@ -719,25 +708,45 @@ always_ff @(posedge CK49) begin
 		case(sprite_fsm_state)
 			0: /* empty */ ;
 			1: begin
+				//If the sprite limit is reached, hold the state machine in an empty state, otherwise latch the sprite H/V flip
+				//bits, sprite size, bit 8 of the sprite X position and its select bit
 				if(sprite_index > sprite_limit)
 					sprite_fsm_state <= 0;
 				else begin
-					sprite_attrib4 <= spriteram_D;
+					sprite_vflip <= spriteram_D[6] ^ ~flipscreen;
+					sprite_hflip <= spriteram_D[5] ^ flipscreen;
+					sprite_size <= spriteram_D[4:2];
+					sprite_x8_sel <= spriteram_D[1];
+					sprite_x8_vram <= spriteram_D[0];
 					sprite_offset <= 3'd3;
 					sprite_fsm_state <= sprite_fsm_state + 3'd1;
 				end
 			end
 			2: begin
-				sprite_attrib3 <= spriteram_D;
+				//Latch sprite X position and set the 9th bit as either the one latched previously from VRAM or the AND of position
+				//bits [7:3] based on the state of the select bit
+				if(sprite_x8_sel)
+					sprite_x[8] <= sprite_x8_vram ^ flipscreen;
+				else
+					sprite_x[8] <= (&spriteram_D[7:3]) ^ flipscreen;
+				sprite_x[7:0] <= spriteram_D ^ {8{flipscreen}};
 				sprite_offset <= 3'd2;
 				sprite_fsm_state <= sprite_fsm_state + 3'd1;
 			end
 			3: begin
-				//Skip the current sprite if it's inactive, otherwise obtain the sprite Y attribute and continue
-				//scanning out the rest of the sprite attributes
+				//Latch sprite Y position
+				sprite_y <= spriteram_D;
+				sprite_offset <= 3'd1;
+				sprite_fsm_state <= sprite_fsm_state + 3'd1;
+			end
+			4: begin
+				//Skip the current sprite if it's inactive, otherwise latch sprite color and the upper/lower 2 bits of the sprite
+				//code, and continue scanning out the rest of the sprite attributes
 				if(sprite_active) begin
-					sprite_attrib2 <= spriteram_D;
-					sprite_offset <= 3'd1;
+					sprite_color <= spriteram_D[7:4];
+					sprite_code[1:0] <= spriteram_D[3:2];
+					sprite_code[11:10] <= spriteram_D[1:0];
+					sprite_offset <= 3'd0;
 					sprite_fsm_state <= sprite_fsm_state + 3'd1;
 				end
 				else begin
@@ -746,13 +755,9 @@ always_ff @(posedge CK49) begin
 					sprite_fsm_state <= 3'd1;
 				end
 			end
-			4: begin
-				sprite_attrib1 <= spriteram_D;
-				sprite_offset <= 3'd0;
-				sprite_fsm_state <= sprite_fsm_state + 3'd1;
-			end
 			5: begin
-				sprite_attrib0 <= spriteram_D;
+				//Latch bits [9:2] of the sprite code and set up the sprite width based on the sprite size
+				sprite_code[9:2] <= spriteram_D;
 				sprite_offset <= 3'd4;
 				sprite_index <= sprite_index + 9'd5;
 				case(sprite_size)
@@ -760,7 +765,6 @@ always_ff @(posedge CK49) begin
 					3'b001: sprite_width <= 6'b110000 + (BTLG == 2'b01 && flipscreen);
 					3'b010: sprite_width <= 6'b111000 + (BTLG == 2'b01 && flipscreen);
 					3'b011: sprite_width <= 6'b111000 + (BTLG == 2'b01 && flipscreen);
-					3'b100: sprite_width <= 6'b100000 + (BTLG == 2'b01 && flipscreen);
 					default: sprite_width <= 6'b100000 + (BTLG == 2'b01 && flipscreen);
 				endcase
 				sprite_fsm_state <= sprite_fsm_state + 3'd1;
@@ -780,36 +784,6 @@ always_ff @(posedge CK49) begin
 			default:;
 		endcase
 end
-
-//Obtain sprite X position from sprite attribute byte 3 - append a 9th bit based on the state of bit 1 sprite attribute byte 4,
-//bit 0 of sprite attribute byte 4 if high or the AND of the upper 5 bits of the horizontal position if low
-reg sprite_x8;
-always_ff @(posedge CK49) begin
-	if(sprite_attrib4[1] || tile_ctrl[2])
-		sprite_x8 <= sprite_attrib4[0];
-	else
-		sprite_x8 <= &sprite_attrib3[7:3];
-end
-wire [8:0] sprite_x = {sprite_x8 ^ flipscreen, sprite_attrib3 ^ {8{flipscreen}}};
-
-//If the sprite state machine is in state 3, obtain sprite Y position directly from sprite RAM, otherwise obtain it from
-//sprite attribute byte 2
-wire [7:0] sprite_y = (sprite_fsm_state == 3'd3) ? spriteram_D : sprite_attrib2;
-
-//Sprite flip attributes are stored in bits 5 (horizontal) and 6 (vertical) of sprite attribute byte 4
-//Also XOR these attributes with the flipscreen bit (XOR with the inverse for vertical flip)
-wire sprite_hflip = sprite_attrib4[5] ^ flipscreen;
-wire sprite_vflip = sprite_attrib4[6] ^ ~flipscreen;
-
-//Sprite color is the upper 4 bits of sprite attribute byte 1
-wire [3:0] sprite_color = sprite_attrib1[7:4];
-
-//The 005885 supports 5 different sprite sizes: 8x8, 8x16, 16x8, 16x16 and 32x32.  Retrieve this attribute from bits [4:2] of
-//sprite attribute byte 4
-wire [2:0] sprite_size = sprite_attrib4[4:2];
-
-//Sprite code is sprite attribute byte 0 sandwiched between bits 1 and 0 and bits 3 and 2 of sprite attribute byte 1
-wire [11:0] sprite_code = {sprite_attrib1[1:0], sprite_attrib0, sprite_attrib1[3:2]};
 
 //Adjust sprite code based on sprite size
 wire [11:0] sprite_code_sized = sprite_size == 3'b000 ? {sprite_code[11:2], ly[3], lx[3]}:          //16x16
@@ -982,4 +956,5 @@ assign COL = (BTLG == 2'b01 && ((h_cnt >= 247 && ~flipscreen) || (h_cnt <= 14 &&
 //HBlank for Iron Horse bootlegs while maintaining the usual 240x224 display area
 
 endmodule
+
 

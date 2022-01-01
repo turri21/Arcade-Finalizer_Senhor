@@ -40,6 +40,11 @@ module Finalizer
 	//NEC uPD8749 MCU) at 9.216MHz
 	input          [1:0] is_bootleg,
 	
+	//This input serves to select a fractional divider to acheive 1.536MHz for the SN76489 and 6.144MHz for
+	//the SND01 depending on whether Finalizer runs with original or underclocked timings to normalize sync
+	//frequencies
+	input                underclock,
+	
 	//Screen centering (alters HSync and VSync timing in the Konami 005885 to reposition the video output)
 	input          [3:0] h_center, v_center,
 	
@@ -110,25 +115,35 @@ always_ff @(posedge clk_49m) begin
 	if(cen_6m) begin
 		clk_phase <= clk_phase + 1'd1;
 		case(clk_phase)
-			2'b01: k1_E <= 1;
-			2'b10: k1_Q <= 1;
+			2'b01: k1_Q <= 1;
+			2'b10: k1_E <= 1;
 		endcase
 	end
 end
 
-//Use Jotego's fractional clock divider to generate a 9.216MHz clock enable for the Konami SND01 custom chip (to be used by bootlegs
-//only)
-wire cen_9m;
-jtframe_frac_cen #(2) snd01_cen
+//Use Jotego's fractional clock divider to generate the clock enable for the Konami SND01 custom chip (change between 6.144MHz and
+//9MHz depending on whether a bootleg ROM set is loaded or not)
+wire [9:0] snd01_n = (is_bootleg == 2'b11) ? 10'd48 : underclock ? 10'd65 : 10'd1;
+wire [9:0] snd01_m = (is_bootleg == 2'b11) ? 10'd256 : underclock ? 10'd511 : 10'd8;
+wire cen_snd01;
+jtframe_frac_cen snd01_cen
 (
 	.clk(clk_49m),
-	.n(10'd48),
-	.m(10'd256),
-	.cen({1'bZ, cen_9m})
+	.n(snd01_n),
+	.m(snd01_m),
+	.cen({1'bZ, cen_snd01})
 );
 
-//Select whether to clock the SND01 at 6.144MHz or 9.216MHz depending on whether a bootleg ROM set is loaded
-wire cen_snd01 = (is_bootleg == 2'b11) ? cen_9m : cen_6m;
+//Also use Jotego's fractional clock divider to generate a 1.536MHz clock enable for the SN76489 to maintain consistent sound
+//pitch when the game is underclocked to normalize video timings
+wire cen_1m5_adjust;
+jtframe_frac_cen sound_cen
+(
+	.clk(clk_49m),
+	.n(10'd25),
+	.m(10'd786),
+	.cen({1'bZ, cen_1m5_adjust})
+);
 
 //------------------------------------------------------------ CPUs ------------------------------------------------------------//
 
@@ -402,13 +417,17 @@ always_ff @(posedge clk_49m) begin
 		sn76489_D <= k1_Dout;
 end
 
+//Select whether to use a fractional or integer clock divider for the SN76489 to maintain consistent sound pitch at both original
+//and underclocked timings
+wire cen_sn76489 = underclock ? cen_1m5_adjust : cen_1m5;
+
 //Sound chip 1 (Texas Instruments SN76489 - uses Arnim Laeuger's SN76489 implementation with bugfixes)
 wire [7:0] sn76489_raw;
 wire sn76489_ready;
 sn76489_top u7C
 (
 	.clock_i(clk_49m),
-	.clock_en_i(cen_1m5),
+	.clock_en_i(cen_sn76489),
 	.res_n_i(reset),
 	.ce_n_i(n_sn76489_ce),
 	.we_n_i(sn76489_ready),
@@ -488,8 +507,8 @@ prom_4 u3F
 
 //----------------------------------------------------- Final audio output -----------------------------------------------------//
 
-//Remove DC offset from SN76489 and SND01 and apply gain to both
-wire signed [15:0] sn76489_gain, snd01_gain;
+//Remove DC offset from SN76489 and SND01 and apply gain to the SN76489
+wire signed [15:0] sn76489_gain, snd01_dcrm;
 jt49_dcrm2 #(16) dcrm_sn76489
 (
 	.clk(clk_49m),
@@ -503,8 +522,8 @@ jt49_dcrm2 #(16) dcrm_snd01
 	.clk(clk_49m),
 	.cen(dcrm_cen),
 	.rst(~reset),
-	.din({3'd0, snd01_raw, 5'd0}),
-	.dout(snd01_gain)
+	.din({8'd0, snd01_raw}),
+	.dout(snd01_dcrm)
 );
 
 //Finalizer - Super Transformation uses a 3.386KHz low-pass filter for its SN76489 - apply this filtering here
@@ -519,7 +538,7 @@ finalizer_psg_lpf psg_lpf
 
 //Mix the low-pass filtered output of the SN76489 with the SND01 and apply an extra low-pass filter on the mixed output to minimze
 //aliasing
-wire signed [15:0] sound_mix = sn76489_lpf + snd01_gain;
+wire signed [15:0] sound_mix = sn76489_lpf + (snd01_dcrm <<< 16'd5);
 wire signed [15:0] sound_mix_aa;
 finalizer_lpf lpf
 (

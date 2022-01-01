@@ -15,6 +15,7 @@ An FPGA implementation of Finalizer - Super Transformation for the MiSTer platfo
 - Greg Miller's cycle-accurate MC6809E CPU core with modifications by Sorgelig and bugfixes by Arnim Laeuger and Jotego as the basis for the KONAMI-1 custom encrypted MC6809E
 - SN76489 sound core by Arnim Laeuger with fixes by Ace and Enforcer
 - T48 MCU by Arnim Laeuger configured as an NEC uPD8749 as the basis for the Konami SND01 custom chip
+- Option for normalized video timings to use with picky HDTVs and monitors (underclocks the game by ~1.8%)
 
 ## Installation
 Place `*.rbf` into the "_Arcade/cores" folder on your SD card.  Then, place `*.mra` into the "_Arcade" folder and ROM files from MAME into "games/mame".
