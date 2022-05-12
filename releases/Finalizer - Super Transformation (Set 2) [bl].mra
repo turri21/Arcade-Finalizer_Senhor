@@ -13,7 +13,7 @@
 
 	<setname>finalizrb</setname>
 	<parent>finalizr</parent>
-	<mameversion>0224</mameversion>
+	<mameversion>0240</mameversion>
 	<rbf>Finalizer</rbf>
 	<about author="Ace" twitter="@Ace9921Tweets"></about>
 

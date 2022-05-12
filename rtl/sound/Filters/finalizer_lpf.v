@@ -46,14 +46,17 @@ module finalizer_lpf(
 		B2 = 18'd7278;
 	end
 	
-	iir_1st_order lpf6db(.clk(clk),
-								.reset(reset),
-								.div(div),
-								.A2(A2),
-								.B1(B1),
-								.B2(B2),
-								.in(in),
-								.out(audio_post_lpf1)); 
+	iir_1st_order lpf6db
+	(
+		.clk(clk),
+		.reset(reset),
+		.div(div),
+		.A2(A2),
+		.B1(B1),
+		.B2(B2),
+		.in(in),
+		.out(audio_post_lpf1)
+	); 
 	 
 	assign out = audio_post_lpf1;
 

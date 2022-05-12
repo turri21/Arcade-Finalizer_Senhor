@@ -54,8 +54,7 @@ Quick reference for folders and file placement:
 | A | Fire 2/Shield |
 
 ## Known Issues
-1) Sprites render one frame earlier than normal - this is not correct behavior for Finalizer's graphics rendering
-2) Although bootleg audio errors are recreated, the rest of the inaccurate behavior on bootleg Finalizer boards is currently unknown and not implemented
+1) Although bootleg audio errors are recreated, the rest of the inaccurate behavior on bootleg Finalizer boards is currently unknown and not implemented
 
 ## High Score Save/Load
 Save and load of high scores is supported for this core.
